@@ -51,6 +51,7 @@ const nextConfig: NextConfig = {
 			"chatgpt-credentials.json*",
 			"github-copilot-credentials.json*",
 			"xai-credentials.json*",
+			"anthropic-credentials.json*",
 			".env*",
 		],
 	},
@@ -85,8 +86,9 @@ const nextConfig: NextConfig = {
 			// Public native OAuth factories load these flows through variable imports.
 			// Electron main uses the same standalone SDK; the offline runtime gate
 			// evaluates their real toAuth paths without login or provider requests.
-			"node_modules/@earendil-works/pi-ai/dist/auth/oauth/{load,github-copilot,xai,device-code}.js",
+			"node_modules/@earendil-works/pi-ai/dist/auth/oauth/{load,github-copilot,xai,anthropic,callback-server,pkce,device-code}.js",
 			"node_modules/@earendil-works/pi-ai/dist/utils/sleep.js",
+			"node_modules/@earendil-works/pi-ai/dist/utils/{oauth-page,provider-env}.js",
 			"node_modules/@earendil-works/pi-agent-core/dist/**/*.json",
 			// Next 16.3.2 native Turbopack applies unanchored excludes while
 			// traversing modules; **/data/**/* still prunes gcp-metadata and
