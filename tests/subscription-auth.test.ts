@@ -7,22 +7,23 @@ import { createRequire } from "node:module";
 import { createModels, type OAuthCredential, type ProviderAuthInteraction } from "@earendil-works/pi-ai";
 import { githubCopilotProvider } from "@earendil-works/pi-ai/providers/github-copilot";
 import { xaiProvider } from "@earendil-works/pi-ai/providers/xai";
+import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import type { NativeSubscriptionScope } from "../src/core/contracts/subscriptions.ts";
 const require = createRequire(import.meta.url);
 const { createSubscriptions, loadSubscriptionSDK, validEndpoint, publicError } = require("../electron/subscriptions.cjs");
 const { fileStore, validateState } = require("../electron/subscription-store.cjs");
 const { subscriptionControl } = require("../electron/subscription-ipc.cjs");
-const ids = ["github-copilot", "xai"] as const;
-const credential = (id: string, expires = Date.now() + 3600000): OAuthCredential => ({ type: "oauth", access: id === "xai" ? "fixture-xai-access" : "tid=fixture;proxy-ep=proxy.individual.githubcopilot.com;", refresh: "fixture-refresh", expires, ...(id === "github-copilot" ? { availableModelIds: [githubCopilotProvider().getModels()[0]!.id] } : {}) });
+const ids = ["github-copilot", "xai", "anthropic"] as const;
+const credential = (id: string, expires = Date.now() + 3600000): OAuthCredential => ({ type: "oauth", access: id === "xai" ? "fixture-xai-access" : id === "anthropic" ? "fixture-anthropic-access" : "tid=fixture;proxy-ep=proxy.individual.githubcopilot.com;", refresh: "fixture-refresh", expires, ...(id === "github-copilot" ? { availableModelIds: [githubCopilotProvider().getModels()[0]!.id] } : {}) });
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((done) => { resolve = done; }); return { resolve, promise }; }
 async function fixture(options: { login?: (id: string, interaction: ProviderAuthInteraction) => Promise<OAuthCredential>; refresh?: (id: string, value: OAuthCredential, signal: AbortSignal) => Promise<OAuthCredential>; stores?: Record<string, unknown> } = {}) {
 	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "lh-subscription-auth-"));
 	let refreshes = 0;
 	const factory = (id: string) => {
-		const native = id === "xai" ? xaiProvider() : githubCopilotProvider();
+		const native = id === "xai" ? xaiProvider() : id === "anthropic" ? anthropicProvider() : githubCopilotProvider();
 		return { ...native, auth: { ...native.auth, oauth: { ...native.auth.oauth!, login: (interaction: ProviderAuthInteraction) => options.login?.(id, interaction) ?? Promise.resolve(credential(id)), refresh: async (value: OAuthCredential, signal: AbortSignal) => { refreshes++; return options.refresh?.(id, value, signal) ?? { ...credential(id), refresh: "fixture-rotated" }; } } } };
 	};
-	const sdk = { createModels, githubCopilotProvider: () => factory("github-copilot"), xaiProvider: () => factory("xai") };
+	const sdk = { createModels, githubCopilotProvider: () => factory("github-copilot"), xaiProvider: () => factory("xai"), anthropicProvider: () => factory("anthropic") };
 	const updates: any[] = [], opened: string[] = [];
 	const controller = createSubscriptions({ directory, sdk, stores: options.stores, openExternal: async (url: string) => { opened.push(url); }, onChange: (snapshot: unknown) => updates.push(snapshot) });
 	await controller.ready;
