@@ -3,6 +3,7 @@
 # and upload them again when you stop it with Ctrl+C.
 #   lh                  start
 #   lh --force          start even if another device is marked as using your chats
+#   lh release          upload this phone's chats and mark them free, without starting
 #   lh status           show which device is using your chats
 #   lh resolve local    after a sync conflict, keep this phone's copy
 #   lh resolve remote   after a sync conflict, keep the copy in the sync repo
@@ -14,8 +15,24 @@ SYNC="$APP/data-sync.cjs"
 
 case "${1:-}" in
 	status) exec node "$SYNC" status --dir "$DATA" ;;
+	release) exec node "$SYNC" push --dir "$DATA" ;;
 	resolve) exec node "$SYNC" resolve --dir "$DATA" --keep "${2:?say local or remote}" ;;
 esac
+
+stop() {
+	# Ignore further Ctrl+C: a second press must not cut the upload short.
+	# The upload inherits the ignore, so it always runs to completion.
+	trap '' INT TERM HUP
+	if [ -n "${server:-}" ]; then kill "$server" 2>/dev/null; wait "$server" 2>/dev/null; fi
+	echo
+	echo "Uploading your chats... (wait for it to finish)"
+	node "$SYNC" push --dir "$DATA"
+	termux-wake-unlock 2>/dev/null || true
+	exit 0
+}
+# Set before the download: Ctrl+C at any point after it starts, even during
+# startup, still uploads and releases this phone's claim on your chats.
+trap stop INT TERM HUP
 
 force=()
 [ "${1:-}" = "--force" ] && force=(--force)
@@ -23,26 +40,16 @@ node "$SYNC" pull --dir "$DATA" "${force[@]}"
 code=$?
 case $code in
 	0 | 5) ;;
-	2) echo "Run 'lh --force' to use it here anyway."; exit 2 ;;
-	*) read -rp "Continue with the copy on this phone? [y/N] " answer; [ "$answer" = y ] || exit "$code" ;;
+	2) trap - INT TERM HUP; echo "Run 'lh --force' to use it here anyway."; exit 2 ;;
+	*) read -rp "Continue with the copy on this phone? [y/N] " answer; [ "$answer" = y ] || stop ;;
 esac
 
 termux-wake-lock 2>/dev/null || true
-stop() {
-	trap - INT TERM HUP
-	if [ -n "${server:-}" ]; then kill "$server" 2>/dev/null; wait "$server" 2>/dev/null; fi
-	echo
-	echo "Uploading your chats..."
-	node "$SYNC" push --dir "$DATA"
-	termux-wake-unlock 2>/dev/null || true
-	exit 0
-}
-trap stop INT TERM HUP
-
 LH_DATA_DIR="$DATA" LH_AUTH_FILE="$STATE/auth.json" HOSTNAME=127.0.0.1 PORT=3000 NODE_ENV=production node "$APP/server.js" &
 server=$!
 sleep 4
 termux-open-url http://localhost:3000 2>/dev/null || true
 echo "LearnHarness is running at http://localhost:3000 - press Ctrl+C here to stop and upload."
+echo "Don't close Termux or swipe it away before the upload finishes."
 wait "$server"
 stop

@@ -48,7 +48,8 @@ Needs git, Node.js and the GitHub CLI (`gh`), logged in.
 ## Daily use on the phone
 
 - `lh` starts LearnHarness and opens it in your browser at `http://localhost:3000`. Add it to your home screen from Chrome's menu for an app-like icon.
-- Press **Ctrl+C** in Termux to stop it; it uploads your chats.
+- Press **Ctrl+C** in Termux to stop it; it uploads your chats. Wait for "Synced and released." before closing Termux.
+- `lh release` uploads and frees your chats without starting the app, for example if Termux was closed before it finished.
 - `lh status` shows which device is using your chats.
 - `lh --force` starts even if another device holds the lock (only if that device is lost or you know it has nothing new).
 - `lh resolve local` or `lh resolve remote` picks a copy after a conflict.
