@@ -24,7 +24,8 @@
  *     would shadow every settings-page key change until restart.
  */
 
-const { app, BrowserWindow, Menu, ipcMain, session, shell } = require("electron");
+const { app, BrowserWindow, Menu, dialog, ipcMain, session, shell } = require("electron");
+const dataSync = require("./data-sync.cjs");
 const { createChatGPT, fileStore } = require("./chatgpt.cjs");
 const { attachChatGPTChild, trustedSender, chatGPTControl } = require("./chatgpt-ipc.cjs");
 const { createSubscriptions, loadSubscriptionSDK } = require("./subscriptions.cjs");
@@ -142,6 +143,9 @@ let subscriptionChild = null;
 // Per-launch request capability, never OAuth tokens and never renderer state.
 let desktopAPISecret = null;
 let reopenWindow = null;
+// Device sync (electron/data-sync.cjs) is on only when the data dir is a sync repo.
+let syncActive = false;
+let syncedOnQuit = false;
 const trustedAppWindows = new Set();
 
 // A GUI shell must never die to a stray exception (EPIPE dialogs, a race
@@ -493,12 +497,18 @@ function checkForUpdates({ manual = false } = {}) {
 		});
 }
 
-function installUpdateNow() {
+async function installUpdateNow() {
 	// Kill the server BEFORE the quit-and-install (see block comment).
+	const child = serverProcess;
 	try {
 		killServer();
 	} catch {
 		/* already dead */
+	}
+	// Upload synced data first; quitAndInstall must not be held by before-quit.
+	if (syncActive && !syncedOnQuit) {
+		syncedOnQuit = true;
+		await uploadAfterServerExit(child);
 	}
 	autoUpdater?.quitAndInstall();
 }
@@ -631,6 +641,52 @@ function installMenu() {
 	Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+/** Start: download the latest data and take the device lock. Every failure is
+ *  shown and falls back to this PC's copy; nothing here deletes data. */
+async function syncOnStart() {
+	const dir = DATA_DIR();
+	if (!dataSync.enabled(dir)) return;
+	const attempt = (options) => dataSync.pull(dir, options).catch((error) => ({ status: "error", message: error.message }));
+	const quitNow = () => { app.exit(0); return new Promise(() => {}); };
+	let result = await attempt();
+	log(`sync: ${result.status}${result.message ? ` — ${result.message}` : ""}`);
+	if (result.status === "locked") {
+		const { response } = await dialog.showMessageBox({
+			type: "warning", buttons: ["Quit", "Use here anyway"], defaultId: 0, cancelId: 0,
+			message: `Your chats are in use on "${result.lock.device}"`,
+			detail: `They have been open there since ${new Date(result.lock.since).toLocaleString()}. Stop LearnHarness on that device first; it uploads your chats when it stops. If you use it here anyway, the two copies may conflict.`,
+		});
+		if (response === 0) return quitNow();
+		result = await attempt({ force: true });
+		log(`sync (forced): ${result.status}${result.message ? ` — ${result.message}` : ""}`);
+	}
+	if (result.status !== "ok") {
+		const { response } = await dialog.showMessageBox({
+			type: "warning", buttons: ["Continue with this PC's copy", "Quit"], defaultId: 0, cancelId: 1,
+			message: result.status === "conflict" ? "Sync conflict" : "Couldn't sync your chats",
+			detail: `${result.message ?? ""}\n\nYou can keep working here. LearnHarness tries to upload again when you quit.`,
+		});
+		if (response === 1) return quitNow();
+	}
+	syncActive = true;
+}
+
+/** Quit: wait for the server to stop writing, then upload and release the lock. */
+function uploadAfterServerExit(child) {
+	const stopped = child && child.exitCode === null ? new Promise((done) => { child.once("exit", done); setTimeout(done, 4000); }) : Promise.resolve();
+	return stopped
+		.then(() => dataSync.push(DATA_DIR()))
+		.then((result) => log(`sync on quit: ${result.status}${result.message ? ` — ${result.message}` : ""}`), (error) => log(`sync on quit failed: ${error.message}`));
+}
+function syncOnQuit(event) {
+	if (!syncActive || syncedOnQuit) return;
+	event.preventDefault();
+	syncedOnQuit = true;
+	const child = serverProcess;
+	killServer();
+	uploadAfterServerExit(child).finally(() => app.quit());
+}
+
 async function main() {
 	app.on("window-all-closed", () => {
 		chatgpt?.pause();
@@ -641,6 +697,7 @@ async function main() {
 
 	// The child must not outlive us — cover every quit path.
 	app.on("before-quit", killServer);
+	app.on("before-quit", syncOnQuit);
 	process.on("exit", killServer);
 	process.on("SIGHUP", killServer);
 
@@ -676,6 +733,7 @@ async function main() {
 			},
 		});
 		await subscriptions.ready;
+		await syncOnStart();
 		log(`starting server: ${serverEntry()}`);
 		log(`data dir: ${DATA_DIR()}${fs.existsSync(AUTH_FILE()) ? " · auth.json: present" : " · auth.json: ABSENT (no BYOK keys yet)"}`);
 		await startServer(new URL(url).port);

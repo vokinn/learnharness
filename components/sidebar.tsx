@@ -81,9 +81,17 @@ declare global {
 	}
 }
 
-const SidebarContext = createContext<{ open: boolean; toggle: () => void }>({
+/* Phone widths (plain browser only, e.g. the Termux phone build): the sidebar
+ * is an overlay drawer instead of an inline column — 288px inline would leave
+ * the page a sliver. It starts closed, closes on backdrop tap and navigation,
+ * and never writes the desktop open preference. */
+const MOBILE_QUERY = "(max-width: 767px)";
+
+const SidebarContext = createContext<{ open: boolean; mobile: boolean; toggle: () => void; close: () => void }>({
 	open: false,
+	mobile: false,
 	toggle: () => {},
+	close: () => {},
 });
 
 export function useSidebar() {
@@ -102,6 +110,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 	// mismatch); the stored value is applied after mount.
 	const [open, setOpen] = useState(false);
 	const [narrow, setNarrow] = useState(false);
+	const [mobile, setMobile] = useState(false);
 	const [mounted, setMounted] = useState(false);
 
 	useEffect(() => {
@@ -126,8 +135,10 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 		void window.lh?.getZoom?.().then(setZoomVar);
 
 		const stored = localStorage.getItem(STORAGE_KEY);
-		// Default: open (first run introduces the sidebar).
-		setOpen(stored === null ? true : stored === "1");
+		const phone = !IS_ELECTRON && typeof window.matchMedia === "function" && window.matchMedia(MOBILE_QUERY).matches;
+		setMobile(phone);
+		// Default: open (first run introduces the sidebar); phones start closed.
+		setOpen(!phone && (stored === null ? true : stored === "1"));
 		setMounted(true);
 		return () => off?.();
 	}, []);
@@ -144,7 +155,26 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 		return () => window.removeEventListener("resize", onResize);
 	}, []);
 
+	// Phone ↔ wider (rotation, split screen): crossing to phone width closes
+	// the drawer; crossing back restores the stored desktop preference.
+	useEffect(() => {
+		if (IS_ELECTRON || typeof window.matchMedia !== "function") return;
+		const query = window.matchMedia(MOBILE_QUERY);
+		const onChange = () => {
+			setMobile(query.matches);
+			setOpen(!query.matches && localStorage.getItem(STORAGE_KEY) !== "0");
+		};
+		query.addEventListener("change", onChange);
+		return () => query.removeEventListener("change", onChange);
+	}, []);
+
+	const close = useCallback(() => setOpen(false), []);
+
 	const toggle = useCallback(() => {
+		if (mobile) {
+			setOpen((v) => !v);
+			return;
+		}
 		// Opening while narrow (auto-closed, or the user's own closed-at-
 		// narrow): ask the shell to widen to the threshold — the resize
 		// listener flips `narrow` and the sidebar appears. The preference
@@ -160,7 +190,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 			localStorage.setItem(STORAGE_KEY, v ? "0" : "1");
 			return !v;
 		});
-	}, [narrow, open]);
+	}, [narrow, open, mobile]);
 
 	// ⌘B: the global shortcut dispatches kbdEventForAction("toggle-sidebar")
 	// and the context answers on exactly that name — the shared spelling
@@ -176,7 +206,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 	}, [toggle]);
 
 	return (
-		<SidebarContext.Provider value={{ open: open && !narrow, toggle }}>
+		<SidebarContext.Provider value={{ open: open && !narrow, mobile, toggle, close }}>
 			{/* transitions gated on mount: no slide-in flash on page load */}
 			<div className={cn("flex h-dvh", mounted && "[&_.sidebar-motion]:transition-[width,margin,opacity]")}>{children}</div>
 		</SidebarContext.Provider>
@@ -387,7 +417,7 @@ export type SessionKindFilter = "teach" | "all" | "practice";
 const KIND_FILTER_KEY = "lh:session-kind-filter";
 
 function SessionsSidebar() {
-	const { open, toggle } = useSidebar();
+	const { open, mobile, toggle, close } = useSidebar();
 	const [chats, setChats] = useState<ChatListItem[] | null>(null);
 	const [query, setQuery] = useState("");
 	const [kindFilter, setKindFilter] = useState<SessionKindFilter>("all");
@@ -402,6 +432,10 @@ function SessionsSidebar() {
 	const pathname = usePathname();
 	const router = useRouter();
 	const { open: openSettings } = useSettingsDialog();
+	// Phone drawer: any navigation (a session, new session, home) closes it.
+	useEffect(() => {
+		if (mobile) close();
+	}, [pathname, mobile, close]);
 
 	/* New session (owner, 2026-09-13): NO POST — the button opens the
 	   sessionless draft view; the session is created only when the first
@@ -643,11 +677,25 @@ function SessionsSidebar() {
 	}, [open, pathname, refresh]);
 
 	return (
+		<>
+		{mobile && (
+			<button
+				type="button"
+				aria-label="Close sidebar"
+				tabIndex={-1}
+				onClick={close}
+				className={cn("fixed inset-0 z-40 bg-black/50 transition-opacity duration-200", open ? "opacity-100" : "pointer-events-none opacity-0")}
+			/>
+		)}
 		<aside
-			className={cn("sidebar-motion shrink-0 overflow-hidden duration-200", open ? "w-72" : "w-0")}
+			className={cn(
+				"sidebar-motion shrink-0 overflow-hidden duration-200",
+				mobile && "fixed inset-y-0 left-0 z-50 h-dvh max-w-[85vw] transition-[width]",
+				open ? "w-72" : "w-0",
+			)}
 			aria-hidden={!open}
 		>
-			<div className="flex h-full w-72 flex-col border-r bg-background">
+			<div className="flex h-full w-72 max-w-[85vw] flex-col border-r bg-background">
 				{/* LH wordmark — the owner's header; close toggle sits at the edge.
 				    Merged chrome (2026-09-17): in Electron this band is the
 				    window's drag surface and starts after the traffic lights
@@ -850,7 +898,7 @@ function SessionsSidebar() {
 						<Hint label="Settings" action="open-settings" side="right">
 							<button
 								type="button"
-								onClick={() => openSettings()}
+								onClick={() => { if (mobile) close(); openSettings(); }}
 								data-testid="settings-entry"
 								className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs uppercase tracking-wider text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
 							>
@@ -936,6 +984,7 @@ function SessionsSidebar() {
 					onDeleted={onDeleted}
 				/>
 			</aside>
+		</>
 	);
 }
 
