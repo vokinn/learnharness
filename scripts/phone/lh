@@ -1,0 +1,48 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# Start LearnHarness on this phone: download the latest chats, run the server,
+# and upload them again when you stop it with Ctrl+C.
+#   lh                  start
+#   lh --force          start even if another device is marked as using your chats
+#   lh status           show which device is using your chats
+#   lh resolve local    after a sync conflict, keep this phone's copy
+#   lh resolve remote   after a sync conflict, keep the copy in the sync repo
+# Both copies are kept as backup tags in the repo either way.
+APP="$HOME/learnharness"
+STATE="$HOME/.learnharness"
+DATA="$STATE/data"
+SYNC="$APP/data-sync.cjs"
+
+case "${1:-}" in
+	status) exec node "$SYNC" status --dir "$DATA" ;;
+	resolve) exec node "$SYNC" resolve --dir "$DATA" --keep "${2:?say local or remote}" ;;
+esac
+
+force=()
+[ "${1:-}" = "--force" ] && force=(--force)
+node "$SYNC" pull --dir "$DATA" "${force[@]}"
+code=$?
+case $code in
+	0 | 5) ;;
+	2) echo "Run 'lh --force' to use it here anyway."; exit 2 ;;
+	*) read -rp "Continue with the copy on this phone? [y/N] " answer; [ "$answer" = y ] || exit "$code" ;;
+esac
+
+termux-wake-lock 2>/dev/null || true
+stop() {
+	trap - INT TERM HUP
+	if [ -n "${server:-}" ]; then kill "$server" 2>/dev/null; wait "$server" 2>/dev/null; fi
+	echo
+	echo "Uploading your chats..."
+	node "$SYNC" push --dir "$DATA"
+	termux-wake-unlock 2>/dev/null || true
+	exit 0
+}
+trap stop INT TERM HUP
+
+LH_DATA_DIR="$DATA" LH_AUTH_FILE="$STATE/auth.json" HOSTNAME=127.0.0.1 PORT=3000 NODE_ENV=production node "$APP/server.js" &
+server=$!
+sleep 4
+termux-open-url http://localhost:3000 2>/dev/null || true
+echo "LearnHarness is running at http://localhost:3000 - press Ctrl+C here to stop and upload."
+wait "$server"
+stop
