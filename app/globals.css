@@ -183,6 +183,10 @@ body {
 	background: var(--color-background);
 	color: var(--color-foreground);
 	font-family: var(--font-ui);
+	/* The app frame is exactly one viewport wide: a stray wide child must never
+	   make the whole page pan sideways on a phone. Inner scrollers (code
+	   blocks, tables) keep their own overflow-x. */
+	overflow-x: clip;
 }
 
 /* Teaching prose (the markdown renderer's container gets .lh-prose):
